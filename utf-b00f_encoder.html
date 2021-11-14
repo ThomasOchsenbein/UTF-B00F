@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8"/>
+<title>UTF-B00F - Reference Encoder</title>
+<link rel= "stylesheet"  type="text/css" href= "utf-b00f.css">
+
+</head>
+
+<body>
+
+<h1>UTF-B00F Reference Encoder</h1>
+
+<h2>Legal Mumbo Jumbo</h2>
+<p>
+This UTF-B00F reference encoder is licensed under the 3 clause BSD license.
+</p>
+<p class="license">
+Copyright (c) 2021, Thomas Ochsenbein<br/>
+<br/>
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:<br/>
+<br/>
+    Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.<br/>
+    Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.<br/>
+    Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.<br/>
+<br/>
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.<br/>
+</p>
+
+<h2>Overview</h2>
+<p>
+This UTF-B00F reference encoder is written in JavaScript, embedded in this web page. It uses the HTML5 File API, and it
+runs 100% on client. It has not been tested with very large files, it will most likely crash with very large files.
+</p>
+
+<h2>Input</h2>
+<div id="input">
+  <h5>Input File</h5>
+  <input type="file" id="inputFile" />
+</div>
+<div id="progress_bar">
+  <div class="percent">0%</div>
+</div>
+
+<h2>Output</h2>
+<h5>Output Text</h5>
+<pre>
+<p id="encodedOutput"></p>
+</pre>
+<h5>Output File</h5>
+<label for="outputFileName">File Name:</label> <input id="outputFileName" type="text" value="encoded.txt" />&nbsp;&nbsp;
+<button id="saveB00f" type="button" disabled="true">Save UTF-B00F text</button>
+
+<script type = "text/javascript">
+
+/**********************************************************************************************************************/
+
+const littleEndian = true;  //getBigUint64 defaults to big endian
+
+var progress = document.querySelector('.percent');
+var reader;
+
+var fileName;
+var fileSize;
+
+var bytesProcessed;
+var b00fEncodedString;
+
+
+//Converts an 128bit unsigned little endian BigInt to UTF-B00F encoded string
+//dqword is a BigInt, numBytes is standard var
+function convertDqwordToString(dqword,numBytes) {
+
+  var word0;
+  var word1;
+  var word2;
+  var word3;
+  var word4;
+  var word5;
+  var word6;
+  var word7;
+  var word8;
+  var returnString;
+
+  if ( !(typeof(dqword) == 'bigint') || dqword < 0n || dqword > ((2n ** 128n) - 1n) ) {
+    throw "ERROR: dqword parameter is invalid. Approximate position: " + bytesProcessed;
+  }
+  if ( !Number.isInteger(numBytes) || numBytes < 9 || numBytes > 16 ) {
+    throw "ERROR: numBytes parameter is invalid. Approximate position: " + bytesProcessed;
+  }
+
+  word0 = (dqword & 32767n);             //32767=0x7FFF
+  word1 = ((dqword >>  15n) & 32767n);
+  word2 = ((dqword >>  30n) & 32767n);
+  word3 = ((dqword >>  45n) & 32767n);
+  word4 = ((dqword >>  60n) & 32767n);
+  word5 = ((dqword >>  75n) & 32767n);
+  word6 = ((dqword >>  90n) & 32767n);
+  word7 = ((dqword >> 105n) & 32767n);
+  word8 = (dqword >> 120n) + BigInt((numBytes-1) << 11);   //bits 120-127 + the count in highest 4 bits
+  
+  returnString  = String.fromCharCode(Number(word0)+0x3010);
+  returnString += String.fromCharCode(Number(word1)+0x3010);
+  returnString += String.fromCharCode(Number(word2)+0x3010);
+  returnString += String.fromCharCode(Number(word3)+0x3010);
+  returnString += String.fromCharCode(Number(word4)+0x3010);
+  returnString += String.fromCharCode(Number(word5)+0x3010);
+  returnString += String.fromCharCode(Number(word6)+0x3010);
+  returnString += String.fromCharCode(Number(word7)+0x3010);
+  returnString += String.fromCharCode(Number(word8)+0x3010);
+
+  return returnString;
+
+}
+
+
+//Counts the number of times the byte is repeated from startPos, up to maximum of 16
+function countRepeatedBytes(arrayViewBytes, startPos) {
+
+  var initialByte = arrayViewBytes.getUint8(startPos);
+  var returnCount = 1;
+
+  for ( let i=1; i<16 && (startPos+i)<arrayViewBytes.byteLength; i++ ) {
+    if ( initialByte == arrayViewBytes.getUint8(startPos+i) ) { returnCount++; }
+    else { break; }
+  }
+
+  return returnCount;
+
+}
+
+
+function errorHandler(evt) {
+  switch (evt.target.error.code) {
+    case evt.target.error.NOT_FOUND_ERR:
+      alert('File Not Found!');
+      break;
+    case evt.target.error.NOT_READABLE_ERR:
+      alert('File is not readable');
+      break;
+    case evt.target.error.ABORT_ERR:
+      break; // noop
+    default:
+      alert('An error occurred reading this file.');
+  }
+}
+
+
+function updateProgress(evt) {
+  // evt is an ProgressEvent.
+  if (evt.lengthComputable) {
+    var percentLoaded = Math.round((evt.loaded / evt.total) * 100);
+    // Increase the progress bar length.
+    if (percentLoaded < 100) {
+      progress.style.width = percentLoaded + '%';
+      progress.textContent = percentLoaded + '%';
+    }
+  }
+}
+
+
+function inputFileSelect(evt) {
+  // Reset progress indicator on new file selection.
+  progress.style.width = '0%';
+  progress.textContent = '0%';
+
+  // Reset output string
+  document.getElementById("encodedOutput").textContent = "";
+
+  reader = new FileReader();
+
+  reader.onerror = errorHandler;
+  reader.onprogress = updateProgress;
+  reader.onabort = function(e) {
+    alert('File read cancelled');
+  };
+
+  reader.onloadstart = function(e) {
+    document.getElementById('progress_bar').className = 'loading';
+  };
+
+  reader.onload = function(e) {
+
+    var arrayBuffer;
+    var arrayView;
+    var fileSizeRemainder;
+    var tmpDqword;
+    var tmpQwordHigh;
+    var tmpQwordLow;
+    var tmpString;
+    var tmpCount;
+
+    //Ensure that the progress bar displays 100% at the end.
+    progress.style.width = '100%';
+    progress.textContent = '100%';
+    setTimeout("document.getElementById('progress_bar').className='';", 2000);
+
+    //Start processing
+    b00fEncodedString = "";
+    document.getElementById("encodedOutput").textContent = "";
+    saveB00f.disabled = true;
+
+    arrayBuffer = reader.result;
+    arrayView = new DataView(arrayBuffer, 0, arrayBuffer.byteLength);
+    fileSize = arrayBuffer.byteLength;
+    console.log("File name: " + fileName);
+    console.log("File size (bytes): " + fileSize);
+
+    //Process chunks of the file
+    bytesProcessed = 0;
+    while ( bytesProcessed < fileSize ) {
+
+      //Determine if same byte value is repeated multiple times, if so use compressed encoding
+      tmpCount = countRepeatedBytes(arrayView,bytesProcessed);
+      if ( tmpCount == 16 ) {
+        b00fEncodedString += String.fromCharCode(arrayView.getUint8(bytesProcessed) + 0x1400);
+        bytesProcessed += 16;
+        continue;
+      }
+      if ( tmpCount >= 8 && tmpCount < 16 ) {
+        b00fEncodedString += String.fromCharCode(arrayView.getUint8(bytesProcessed) + 0x1300);
+        bytesProcessed += 8;
+        continue;
+      }
+      if ( tmpCount >= 4 && tmpCount < 8 ) {
+        b00fEncodedString += String.fromCharCode(arrayView.getUint8(bytesProcessed) + 0x1200);
+        bytesProcessed += 4;
+        continue;
+      }
+      //If we are on even multiple of 16 bytes, it is probably not worthwhile compressing 2-3 bytes to 1 UTF char
+      if ( tmpCount >= 2 && tmpCount < 4 && bytesProcessed % 16 != 0 ) {
+        b00fEncodedString += String.fromCharCode(arrayView.getUint8(bytesProcessed) + 0x1100);
+        bytesProcessed += 2;
+        continue;
+      }
+
+      //If there are less than 16 bytes remaining, can't do standard tuple
+      if ( (fileSize - bytesProcessed) < 16 ) {
+        break;
+      }
+
+      //Process standard 9 character tuple
+      //getBigUint64 defaults to Big Endian
+      tmpQwordLow  = arrayView.getBigUint64(bytesProcessed,littleEndian);
+      tmpQwordHigh = arrayView.getBigUint64(bytesProcessed+8,littleEndian);
+      tmpDqword = tmpQwordLow + (tmpQwordHigh<<64n);
+      b00fEncodedString += convertDqwordToString(tmpDqword,16);
+      bytesProcessed += 16;
+
+    }   //while ( bytesProcessed < fileSize )
+
+    //Extra error checking
+    if ( bytesProcessed > fileSize ) {
+      throw "ERROR: bytesProcessed is invalid: " + bytesProcessed;
+    }
+
+    //Process remaining bytes if required
+    fileSizeRemainder = fileSize - bytesProcessed;
+
+    if ( fileSizeRemainder > 15 ) {
+      throw "ERROR: fileSizeRemainder is invalid: " + fileSizeRemainder;
+    }
+
+    if ( fileSizeRemainder > 8 ) {
+      tmpDqword = 0n;
+      for (let i = 0; i < fileSizeRemainder; i++) {
+        tmpDqword += BigInt(arrayView.getUint8(bytesProcessed + i)) << BigInt(i * 8);
+      }
+      b00fEncodedString += convertDqwordToString(tmpDqword,fileSizeRemainder);
+      bytesProcessed += fileSizeRemainder;
+    }
+
+    if ( fileSizeRemainder > 0 && fileSizeRemainder <= 8 ) {
+      for (let i = 0; i < fileSizeRemainder; i++) {
+        b00fEncodedString += String.fromCharCode(arrayView.getUint8(bytesProcessed + i) + 0x1000);
+      }
+      bytesProcessed += fileSizeRemainder;
+    }
+
+    //Final error check
+    if ( bytesProcessed != fileSize ) {
+      throw "ERROR: bytesProcessed not equal to file size: " + bytesProcessed;
+    }
+
+
+    //Update web page with encoded string and enable file save
+    if ( b00fEncodedString.length <= 100000 ) {
+      document.getElementById("encodedOutput").innerHTML = b00fEncodedString;
+      document.getElementById("encodedOutput").style.color = "#30d148";
+    }
+    else {
+      document.getElementById("encodedOutput").innerHTML =
+        "<i>Unable to display string more than 100,000 characters. Please use Save button below.</i>";
+      document.getElementById("encodedOutput").style.color = "#e83b2c";
+    }
+    saveB00f.disabled = false;
+
+    console.log("HTML encodedOutput element updated");
+
+  } //reader.onload = function(e)
+
+  // Get the file name
+  fileName = evt.target.files[0].name;
+
+  // Read in the source binary file as an array buffer.
+  reader.readAsArrayBuffer(evt.target.files[0]);
+
+} //function inputFileSelect(evt)
+
+
+function saveUtfB00fAsFile() {
+  var fileNameToSaveAs = document.getElementById("outputFileName").value;
+  var charCode, byteArray = [];
+
+  if (b00fEncodedString === undefined || b00fEncodedString == "") {
+    alert("Input file has not been encoded");
+    return;
+  }
+  if (fileNameToSaveAs == "") {
+    alert("Unable to save text - file name must be provided");
+    return;
+  }
+
+	// LE BOM
+  byteArray.push(255, 254);
+
+  // Convert string to UTF-16LE bytes
+  for (var i = 0; i < b00fEncodedString.length; ++i) {
+  
+    charCode = b00fEncodedString.charCodeAt(i);
+  
+    // LE Bytes
+    byteArray.push(charCode & 0xff);
+    byteArray.push((charCode & 0xff00) >>> 8);
+
+  }
+
+  var textToSaveAsBlob = new Blob([new Uint8Array(byteArray)], {
+    type: "text/plain;charset=UTF-16LE;"
+  });
+  var textToSaveAsURL = window.URL.createObjectURL(textToSaveAsBlob);
+  var downloadLink = document.createElement("a");
+
+  downloadLink.download = fileNameToSaveAs;
+  downloadLink.innerHTML = "Download File";
+  downloadLink.href = textToSaveAsURL;
+  downloadLink.onclick = destroyClickedElement;
+  downloadLink.style.display = "none";
+  document.body.appendChild(downloadLink);
+
+  downloadLink.click();
+  console.log("File saved: " + fileNameToSaveAs);
+
+  //Reset UI
+  document.getElementById("inputFile").value = "";
+  document.getElementById("encodedOutput").textContent = "";
+  document.getElementById("outputFileName").value = "";
+
+}
+
+function destroyClickedElement(event) {
+  document.body.removeChild(event.target);
+}
+
+
+// Start your engines
+if (window.File && window.FileReader && window.FileList && window.Blob) {
+  document.getElementById('inputFile').addEventListener('change', inputFileSelect);
+  document.getElementById('saveB00f').addEventListener('click', saveUtfB00fAsFile);
+} else {
+  alert('The HTML5 File APIs are not fully supported in this browser.');
+}
+
+</script>
+
+</body>
+</html>

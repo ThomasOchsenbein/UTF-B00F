@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8"/>
+<title>UTF-B00F - Reference Decoder</title>
+<link rel= "stylesheet"  type="text/css" href= "utf-b00f.css">
+
+</head>
+
+<body>
+
+<h1>UTF-B00F Reference Decoder</h1>
+
+<h2>Legal Mumbo Jumbo</h2>
+<p>
+This UTF-B00F reference decoder is licensed under the 3 clause BSD license.
+</p>
+<p class="license">
+Copyright (c) 2021, Thomas Ochsenbein<br/>
+<br/>
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:<br/>
+<br/>
+    Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.<br/>
+    Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.<br/>
+    Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.<br/>
+<br/>
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.<br/>
+</p>
+
+<h2>Overview</h2>
+<p>
+This UTF-B00F reference decoder is written in JavaScript, embedded in this web page. It uses the HTML5 File API, and it
+runs 100% on client. It has not been tested with very large files, it will most likely crash with very large files.
+</p>
+
+<h2>Input</h2>
+<div id="input">
+  <h5>Input String</h5>
+  UTF-B00F string: <input type="text" id="inputTextBox" onchange="inputTextChange()" size="80" /><br />
+  <h5>Input File</h5>
+  UTF-B00F text file: <input type="file" id="inputFile" />
+</div>
+<div id="progress_bar">
+  <div class="percent">0%</div>
+</div>
+
+<h2>Output</h2>
+<h5>Output File</h5>
+<p>
+Save file as: <input type="text" id="destFileName" size="60" /><br/>
+<br />
+<button type="button" id="decodeB00f">Decode UTF-B00F string</button>
+<br />
+</p>
+
+<script type = "text/javascript">
+
+/**********************************************************************************************************************/
+
+const littleEndian = true;  //setBigUint64 defaults to big endian
+
+var progress = document.querySelector('.percent');
+
+var inputText;
+var inputTextLength;
+var inputZArray;
+var inputZCount;
+var inputNotZCount;
+var inputPos;
+var tmpString;
+var tmpDqword;
+var tmpWord;
+var tmpLen;
+var outputFileName;
+var outputBufferSize;
+var outputBuffer;
+var outputView;
+var outputPos;
+
+
+function inputTextChange() {
+  inputText = document.getElementById("inputTextBox").value;
+}
+
+
+function errorHandler(evt) {
+  switch (evt.target.error.code) {
+    case evt.target.error.NOT_FOUND_ERR:
+      alert('File Not Found!');
+      break;
+    case evt.target.error.NOT_READABLE_ERR:
+      alert('File is not readable');
+      break;
+    case evt.target.error.ABORT_ERR:
+      break; // noop
+    default:
+      alert('An error occurred reading this file.');
+  }
+}
+
+
+function updateProgress(evt) {
+  // evt is an ProgressEvent.
+  if (evt.lengthComputable) {
+    var percentLoaded = Math.round((evt.loaded / evt.total) * 100);
+    // Increase the progress bar length.
+    if (percentLoaded < 100) {
+      progress.style.width = percentLoaded + '%';
+      progress.textContent = percentLoaded + '%';
+    }
+  }
+}
+
+
+function inputFileSelect(evt) {
+  // Reset progress indicator on new file selection.
+  progress.style.width = '0%';
+  progress.textContent = '0%';
+
+  var reader = new FileReader();
+
+  reader.onerror = errorHandler;
+  reader.onprogress = updateProgress;
+  reader.onabort = function(e) {
+    alert('File read cancelled');
+  };
+
+  reader.onloadstart = function(e) {
+    document.getElementById('progress_bar').className = 'loading';
+  };
+
+  reader.onload = function(e) {
+
+    //Ensure that the progress bar displays 100% at the end.
+    progress.style.width = '100%';
+    progress.textContent = '100%';
+    setTimeout("document.getElementById('progress_bar').className='';", 2000);
+
+    //Load the string from file
+    inputText = reader.result;
+
+  }
+
+  var file = evt.target.files[0];
+  var textType = /text.*/;
+
+  if ( !file.type.match(textType) ) {
+    alert('Input file is not a text file');
+    return;
+  }
+
+  reader.readAsText(file);
+
+} //function inputFileSelect(evt)
+
+
+function saveByteArray(inData, inName) {
+  let link = document.createElement('a');
+  let blob = new Blob([inData], {
+    type: 'octet/stream'
+  });
+
+  link.download = inName;
+  link.href = URL.createObjectURL(blob);
+  link.click();
+
+  URL.revokeObjectURL(link.href);
+}
+
+
+function isValidWord(inWord) {
+  if (inWord < 0 || inWord > 0x7FFF) return false;
+  return true;
+}
+
+
+//Returns the 4 bit count from 9 character UTF-B00F string.
+function getTupleByteCount(srcString) {
+
+  var word8;
+
+  word8 = srcString.codePointAt(8) - 0x3010;
+
+  if ( !isValidWord(word8) ) {
+    throw "ERROR: Invalid character detected in input. Approximate position: " + inputPos;
+  }
+  if ( ((word8>>8) & 7) != 0 ) {
+    throw "ERROR: Zero bits are not zero. Approximate position: " + inputPos;
+  }
+  if ( (word8>>11) < 8 ) {
+    throw "ERROR: Byte count cannot be less than 9. Approximate position: " + inputPos;
+  }
+
+  return ((word8>>11)+1);
+
+}
+
+
+//Decodes 9 UTF character string into an unsigned 128bit BigInt
+function convertTupleToDqword(srcString) {
+
+  var word0;
+  var word1;
+  var word2;
+  var word3;
+  var word4;
+  var word5;
+  var word6;
+  var word7;
+  var word8;
+  var returnDqword;
+
+  word0 = srcString.codePointAt(0) - 0x3010;
+  word1 = srcString.codePointAt(1) - 0x3010;
+  word2 = srcString.codePointAt(2) - 0x3010;
+  word3 = srcString.codePointAt(3) - 0x3010;
+  word4 = srcString.codePointAt(4) - 0x3010;
+  word5 = srcString.codePointAt(5) - 0x3010;
+  word6 = srcString.codePointAt(6) - 0x3010;
+  word7 = srcString.codePointAt(7) - 0x3010;
+  word8 = srcString.codePointAt(8) - 0x3010;
+
+  if (!isValidWord(word0) || !isValidWord(word1) || !isValidWord(word2) || !isValidWord(word3) || !isValidWord(word4) ||
+    !isValidWord(word5) || !isValidWord(word6) || !isValidWord(word7) || !isValidWord(word8)) {
+    throw "ERROR: Invalid character detected in input. Approximate position: " + inputPos;
+  }
+  if ( ((word8>>8) & 7) != 0 ) {
+    throw "ERROR: Zero bits are not zero. Approximate position: " + inputPos;
+  }
+  if ( (word8>>11) < 8 ) {
+    throw "ERROR: Byte count cannot be less than 9. Approximate position: " + inputPos;
+  }
+
+  returnDqword = BigInt(word0) + (BigInt(word1)<<15n) + (BigInt(word2)<<30n) + (BigInt(word3)<<45n)
+      + (BigInt(word4)<<60n) + (BigInt(word5)<<75n) + (BigInt(word6)<<90n) + (BigInt(word7)<<105n)
+      + (BigInt(word8 & 0xFF)<<120n);
+
+  return returnDqword;
+
+}
+
+
+function decodeUtfB00f() {
+
+  if (!(window.File && window.FileReader && window.FileList && window.Blob)) {
+    alert('The HTML5 File APIs are not fully supported in this browser.');
+    return;
+  }
+
+  outputFileName = document.getElementById("destFileName").value;
+
+  //Remove all whitespace characters
+  inputText = inputText.replace(/\s+/g, '');
+  inputTextLength = inputText.length;
+
+  //Make sure input was provided
+  if (inputTextLength == 0 || outputFileName.length == 0) {
+    throw "ERROR: UTF-B00F encoded string and filename cannot be empty";
+  }
+
+  //ArrayBuffer is fixed size.
+  //Must loop through string 2 times. First time to calculate required size, 2nd time to actually fill the buffer.
+  inputPos = 0;
+  outputPos = 0;
+  tmpString = "";
+  tmpLen = 0;
+  outputBufferSize = 0;
+
+  while (inputPos < inputTextLength) {
+
+    //Compressed encodings
+    tmpWord = inputText.codePointAt(inputPos);
+    if ( tmpWord >= 0x1000 && tmpWord <= 0x14FF ) {
+      if ( tmpString != "" ) {
+        throw "ERROR: Compressed encoding in middle of tuple";
+      }
+      outputBufferSize += (1 << ( (tmpWord>>8) & 0x0F ));
+      inputPos++;
+      continue;
+    }
+
+    //Add single char to tmpString
+    tmpString += inputText[inputPos];
+    inputPos++;
+
+    //If tmpString is 9 chars, get number of bytes from the tuple
+    if (tmpString.length == 9) {
+      outputBufferSize += getTupleByteCount(tmpString);
+      tmpString = "";   //Reset tmpString
+      continue;
+    }
+
+  } //while (inputPos < inputText.length)
+
+  //Final validation
+  if ( tmpString != "" ) {
+    throw "ERROR: Incomplete tuple detected at end of input string";
+  }
+
+  //Create array buffer and view
+  outputBuffer = new ArrayBuffer(outputBufferSize);
+  outputView = new DataView(outputBuffer);
+
+  console.log("Created output buffer. Size (bytes): " + outputBufferSize);
+
+  //Convert the string
+  inputPos = 0;
+  outputPos = 0;
+  tmpString = "";
+  tmpLen = 0;
+
+  while (inputPos < inputTextLength) {
+
+    //Compressed encodings
+    tmpWord = inputText.codePointAt(inputPos);
+    if ( tmpWord >= 0x1000 && tmpWord <= 0x14FF ) {
+      tmpLen = (1 << ( (tmpWord>>8) & 0x0F ));
+      for (let i=0; i<tmpLen; i++) {
+        outputView.setUint8( outputPos, tmpWord & 0xFF );
+        outputPos++;
+      }
+      inputPos++;
+      continue;
+    }
+
+    //Add single char to tmpString
+    tmpString += inputText[inputPos];
+    inputPos++;
+
+    //If tmpString is 9 chars, process the tuple
+    if (tmpString.length == 9) {
+      tmpLen = getTupleByteCount(tmpString);
+      tmpDqword = convertTupleToDqword(tmpString);
+
+      //there will always be between 9-16 bytes converted
+      outputView.setBigUint64( outputPos, (tmpDqword & (2n**64n-1n) ), littleEndian );
+      outputPos += 8;
+
+      if ( tmpLen == 16 ) {
+        outputView.setBigUint64( outputPos, ( (tmpDqword>>64n) & (2n**64n-1n) ), littleEndian );
+        outputPos += 8;
+      }
+      else {
+        for (let i=8; i<tmpLen; i++) {
+          outputView.setUint8( outputPos, Number( (tmpDqword>>BigInt(i*8)) & 255n ) );
+          outputPos++;
+        }
+      }
+
+      tmpString = "";   //Reset tmpString
+      continue;
+    }
+
+  } //while (inputPos < inputText.length)
+
+  //Final validation
+  if ( outputPos != outputBufferSize ) {
+    throw "ERROR: Wrong number of bytes written to outputBuffer: " + outputPos;
+  }
+
+  saveByteArray(outputBuffer, outputFileName);
+
+  console.log("File downloaded: " + outputFileName);
+
+  //Reset UI
+  document.getElementById("inputTextBox").value = "";
+  document.getElementById("inputFile").value = "";
+  document.getElementById("destFileName").value = "";
+
+}
+
+
+// Start your engines
+if (window.File && window.FileReader && window.FileList && window.Blob) {
+  document.getElementById('inputFile').addEventListener('change', inputFileSelect);
+  document.getElementById('decodeB00f').addEventListener('click', decodeUtfB00f);
+} else {
+  alert('The HTML5 File APIs are not fully supported in this browser.');
+}
+
+</script>
+
+</body>
+</html>

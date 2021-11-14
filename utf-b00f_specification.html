@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>UTF-B00F - Efficiently encode binary data to UTF16 characters</title>
+<link rel= "stylesheet"  type="text/css" href= "utf-b00f.css">
+</head>
+<body>
+
+<h1>UTF-B00F Specification</h1>
+
+<h2>Legal Mumbo Jumbo</h2>
+<p>
+The UTF-B00F algorithm was invented during Covid19 lockdown, as an improvement of the Ascii85 encoding
+(<a href="https://en.wikipedia.org/wiki/Ascii85" target="_blank">Wikipedia - Ascii85</a>). The UTF-B00F specification is
+licensed under the
+<a href="https://en.wikipedia.org/wiki/Wikipedia:Text_of_Creative_Commons_Attribution-ShareAlike_3.0_Unported_License"
+ target="_blank">Creative Commons Attribution-ShareAlike License</a>.
+</p>
+<p class="license">
+Information and views expressed in this document, including URL and other Internet website references, may change
+without notice. You bear the risk of using this specification.<br/>
+THIS SPECIFICATION IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SPECIFICATION, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.<br/>
+</p>
+
+<h2>Overview</h2>
+<p>
+In multiple scenarios there is a requirement to encode arbitrary binary data to human readable text.
+Existing standards such as Base64 encoding and Ascii85 encoding have encoded binary data into 7 bit ASCII characters.
+Most modern computer platforms now support UTF16 text.
+UTF-B00F takes advantage of UTF16 2 byte characters to encode binary data more efficiently than Ascii85 and Base64.
+UTF-B00F generally encodes 16 binary bytes as 9 UTF16 characters (18 bytes), and has half the storage overhead of
+Ascii85. Ascii85 requires exponent calculations and divisions; UTF-B00F only requires simple add / subtract / bitwise
+operations.
+</p>
+<p>
+The approximate overheads of the different binary to text encoding methods are:
+<ul>
+<li>Base64 - 33%</li>
+<li>Ascii85 - 25%</li>
+<li>UTF-B00F - 12.5%</li>
+</ul>
+</p>
+<p>
+One disadvantage of Ascii85 is that the string may contain escape characters such as ampersand, quote and backslash,
+which have special meanings in many programming languages and in some text-based protocols.
+UTF-B00F avoids all special characters in the string value, and can be safely used anywhere that supports UTF16
+encoding e.g. XML and Java.
+</p>
+<p>
+The UTF-B00F algorithm works with 9 × 15bit chunks = 135bits. The 135bits consists of 128bits binary data + 3 zero bits
++ 4 count bits. The count bits specify how many source binary bytes are encoded - 1. The 4 count bits will almost always
+ be 0xF = 16 bytes encoded.<br/>
+The UTF-B00F algorithm always processes the source binary data as little endian bytes (unlike Ascii85, which is big
+endian).
+</p>
+<p>
+For the encoded string output, each UTF16 character is 2 bytes. UTF16 text can be either big endian or little endian.
+The endianness of the UTF-B00F string is determined by the context it is being used in. For example:
+<ul>
+<li>Plain text file - a Byte Order Marker is placed at the start of file</li>
+<li>XML - please see <a href="https://www.w3.org/TR/REC-xml/#sec-guessing" target="_blank">
+Autodetection of Character Encodings</a></li>
+</ul>
+</p>
+<p>
+As with Ascii85, a UTF-B00F string can have whitespace anywhere in the string; all whitespace must be ignored. Unicode
+has 25 characters defined as whitespace ("WSpace=Y","WS").
+<a href="https://en.wikipedia.org/wiki/Whitespace_character" target="_blank">Wikipedia - Whitespace character</a>
+</p>
+<p></p>
+A UTF-B00F encoded string consists of:
+<ul>
+<li>0 or more "standard tuples" (9 utf characters that convert to 9 - 16 bytes)</li>
+<li>0 or more "compressed encodings" (converts to 1 or 2 or 4 or 8 or 16 repeated bytes)</li>
+</ul>
+</p>
+
+<h2>Encoding</h2>
+<h3>Standard Tuples (9 utf16 characters)</h3>
+<p>
+When encoding a group of 16 binary bytes, it is taken as a 128-bit binary number, least significant byte first
+(UTF-B00F uses the little-endian convention). Then add 3 zero bits and 0xF (4bit "count of bytes - 1") to make 135 bits.
+This is encoded as 9 × 15bit chunks. Each chunk has 0x3010 added to it to make it a valid UTF16 character in the range
+0x3010 (【) to 0xB00F (뀏). The 9 UTF16 characters are always output in little endian order, least signifcant chunk
+first. As stated above, the individual UTF16 characters can be UTF16-LE or UTF16-BE.
+</p>
+<h3>Shortened Encodings</h3>
+<p>
+It will sometimes be necessary to encode a group of less than 16 bytes from the source data. Encoding less than 16
+bytes is inefficient, but is supported by UTF-B00F.<br/>
+To encode 9 - 15 bytes, output a standard tuple of 9 utf16 characters, but set the 4 bit count-1  to the appropriate
+value. For example, if 10 source binary bytes are encoded, the encoder will pad the source with 6 bytes of zero, encode
+as above, and set the 4 bit count-1 to 10-1=9. The shortened encodings are permitted to occur multiple times in the
+encoded UTF16 string (unlike Ascii85). The count of bytes cannot be less than 9, any value less than 9 (4 bit
+"count of bytes - 1" = 8) is an error.<br/>
+To encode 1 - 8 bytes, it is mandatory to use the 0x10zz encoding explained below.
+</p>
+<h3>Compressed encodings (1 utf16 character each)</h3>
+<p>
+UTF-B00F supports the following compressed encodings (expanding on Ascii85's "z" encoding). All encoders must support
+these encodings. The 0x10zz encoding is required in the situation where it is necessary to encode only 1 - 8 bytes.
+Using the 0x10zz encoding, 8 source binary bytes are encoded as 8 UTF characters = 16 bytes. As an example, a 4 byte
+source file with ASCII string "Hi!!" (0x48,0x69,0x21,0x21) will be encoded as: 0x1048,0x1069,0x1121 (၈ၩᄡ).
+</p>
+<table>
+<thead>
+  <tr>
+    <th>Source Binary Data</th>
+    <th>Encoded UTF Character</th>
+  </tr>
+</thead>
+<tbody>
+  <tr>
+    <td>16 repeated bytes of same value 0xzz</td>
+    <td>0x14zz</td>
+  </tr>
+  <tr>
+    <td>8 repeated bytes of same value 0xzz</td>
+    <td>0x13zz</td>
+  </tr>
+  <tr>
+    <td>4 repeated bytes of same value 0xzz</td>
+    <td>0x12zz</td>
+  </tr>
+  <tr>
+    <td>2 repeated bytes of same value 0xzz</td>
+    <td>0x11zz</td>
+  </tr>
+  <tr>
+    <td>1 byte of value 0xzz</td>
+    <td>0x10zz</td>
+  </tr>
+</tbody>
+</table>
+</p>
+
+<h2>Decoding</h2>
+<p>
+The decoder must perform following process:
+<ul>
+<li>
+Read characters from the UTF-B00F string (ignoring whitespace).<br/>
+If first character is in range 0x1000 - 0x14FF, stop reading from source string, decode as per the table above,
+and continue<br/>
+Else<br/>
+Read 9 characters (all must be in the range 0x3010 (【) to 0xB00F (뀏)), decode the standard tuple as above,
+and continue<br/>
+Else<br/>
+As unable to read 9 characters, throw an error<br/>
+</li>
+<li>Repeat until end of string.</li>
+</ul>
+</p>
+<p>
+Note the above logic permits any number of standard tuples and compressed encodings, in any order. The decoder must not
+assume any alignment in regards to the destination binary data. It is possible the UTF-B00F string decodes as unaligned
+bytes e.g. it could output 4 bytes, then 16 bytes, then 11 bytes etc.
+</p>
+
+<h2>Reference Encoder and Decoder</h2>
+<p>
+The following reference Encoder and Decoder are provided to demonstrate the UTF-B00F encoding algorithm. They are
+written in JavaScript using the HTMl5 File API, so it runs 100% client side. JavaScript has native support for UTF16,
+this reduced the amount of coding required. Please feel free to reimplement the UTF-B00F algorithm in other
+programming languages.
+</p>
+<a href="utf-b00f_encoder.html">Reference Encoder</a><br>
+<a href="utf-b00f_decoder.html">Reference Decoder</a><br>
+
+</body>
+</html>
